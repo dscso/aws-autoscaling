@@ -1,5 +1,6 @@
 locals {
   # XXX
+  name = "external"
 }
 
 data "aws_availability_zones" "available" {
@@ -36,12 +37,12 @@ data "aws_ami" "nginx_serverimage" {
   }
 }
 
-module "external" {
+module "asg" {
   source  = "terraform-aws-modules/autoscaling/aws"
   version = "~> 6.5"
 
   # Autoscaling group
-  name = "external"
+  name = local.name
 
   vpc_zone_identifier = module.vpc.intra_subnets
   min_size            = 2
@@ -80,9 +81,9 @@ module "alb_http_sg" { # make load balancer accessible from the internet
   source  = "terraform-aws-modules/security-group/aws//modules/http-80"
   version = "~> 4.0"
 
-  name        = "external-alb-http"
+  name        = "${local.name}-alb-http"
   vpc_id      = module.vpc.vpc_id
-  description = "Security group for external"
+  description = "Security group for ${local.name}"
 
   ingress_cidr_blocks = ["0.0.0.0/0"]
 
@@ -93,7 +94,7 @@ module "alb" {
   source  = "terraform-aws-modules/alb/aws"
   version = "~> 6.0"
 
-  name = "external"
+  name = "${local.name}"
 
   vpc_id          = module.vpc.vpc_id
   subnets         = module.vpc.public_subnets
@@ -109,7 +110,7 @@ module "alb" {
 
   target_groups = [
     {
-      name             = "external"
+      name             = local.name
       backend_protocol = "HTTP"
       backend_port     = 80
       target_type      = "instance"
