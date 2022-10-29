@@ -1,6 +1,14 @@
 locals {
-  # XXX
+  # defining name of load balancer
   name = "external"
+}
+# create 10 buckets with incrementing name
+module "ten-buckets" {
+  count  = 10
+  source = "terraform-aws-modules/s3-bucket/aws"
+
+  bucket = "${var.ten_buckets}-${count.index}"
+  acl    = "private"
 }
 
 data "aws_availability_zones" "available" {
@@ -8,15 +16,15 @@ data "aws_availability_zones" "available" {
 }
 
 module "vpc" {
-  source = "terraform-aws-modules/vpc/aws"
+  source  = "terraform-aws-modules/vpc/aws"
   version = "~> 3.18.0"
 
   name = "my-vpc"
   cidr = "10.0.0.0/16"
 
-  azs             = [data.aws_availability_zones.available.names[0], data.aws_availability_zones.available.names[1]]
-  intra_subnets = ["10.0.1.0/24", "10.0.2.0/24"] # private subnets for ec2 instances
-  public_subnets  = ["10.0.101.0/24", "10.0.102.0/24"] # load balancer
+  azs            = [data.aws_availability_zones.available.names[0], data.aws_availability_zones.available.names[1]]
+  intra_subnets  = ["10.0.1.0/24", "10.0.2.0/24"]     # private subnets for ec2 instances
+  public_subnets = ["10.0.101.0/24", "10.0.102.0/24"] # load balancer
 
   enable_nat_gateway = false # no internet 😢
   enable_vpn_gateway = false
@@ -24,6 +32,7 @@ module "vpc" {
   tags = {}
 }
 
+# need to use some preinstalled nginx because there is no internet in the ec2 instances due to missing nat gateway
 data "aws_ami" "nginx_serverimage" {
   most_recent = true
   owners      = ["979382823631"]
@@ -32,16 +41,16 @@ data "aws_ami" "nginx_serverimage" {
     name = "name"
 
     values = [
-      "bitnami-nginx-1.23.2-0-r01-linux-debian-11-x86_64-hvm-ebs-nami",
+      "bitnami-nginx-*-linux-debian-*-hvm-ebs-nami",
     ]
   }
 }
 
+# autoscaling group
 module "asg" {
   source  = "terraform-aws-modules/autoscaling/aws"
   version = "~> 6.5"
 
-  # Autoscaling group
   name = local.name
 
   vpc_zone_identifier = module.vpc.intra_subnets
@@ -51,33 +60,65 @@ module "asg" {
 
   # Launch template
   create_launch_template = true
-  image_id      = data.aws_ami.nginx_serverimage.id
-  instance_type = "t2.micro"
+  image_id               = data.aws_ami.nginx_serverimage.id
+  instance_type          = "t2.micro"
 
-  target_group_arns = module.alb.target_group_arns
-  security_groups          = [aws_security_group.asg_sg.id
-    #module.asg_sg.security_group_id
-  ]
-
-#  network_interfaces = [
-#    {
-#      delete_on_termination = true
-#      description           = "eth0"
-#      device_index          = 0
-#      security_groups       = [module.asg_sg.security_group_id]
-#    },
-#    {
-#      delete_on_termination = true
-#      description           = "eth1"
-#      device_index          = 1
-#      security_groups       = [module.asg_sg.security_group_id]
-#    }
-#  ]
+  security_groups = [aws_security_group.asg_sg.id]
+  load_balancers  = [module.elb_http.this_elb_name]
 
   tags = {}
 }
 
-module "alb_http_sg" { # make load balancer accessible from the internet
+module "elb_http" {
+  source  = "terraform-aws-modules/elb/aws"
+  version = "~> 2.0"
+
+  name = "${local.name}-elb"
+
+  subnets         = module.vpc.public_subnets
+  security_groups = [module.elb_http_sg.security_group_id]
+  internal        = false
+
+  listener = [
+    {
+      instance_port     = 80
+      instance_protocol = "HTTP"
+      lb_port           = 80
+      lb_protocol       = "HTTP"
+    },
+    {
+      instance_port     = 80
+      instance_protocol = "http"
+      lb_port           = 80
+      lb_protocol       = "http"
+    },
+  ]
+
+  health_check = {
+    target              = "HTTP:80/"
+    interval            = 30
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+    timeout             = 5
+  }
+
+  access_logs = {
+    bucket = var.elb_logging_bucket_name
+  }
+
+  tags = {}
+}
+# logging
+module "elb_logging_bucket" {
+  source = "terraform-aws-modules/s3-bucket/aws"
+
+  bucket                         = var.elb_logging_bucket_name
+  acl                            = "log-delivery-write"
+  attach_elb_log_delivery_policy = true
+}
+
+# make load balancer accessible from the internet
+module "elb_http_sg" {
   source  = "terraform-aws-modules/security-group/aws//modules/http-80"
   version = "~> 4.0"
 
@@ -90,35 +131,6 @@ module "alb_http_sg" { # make load balancer accessible from the internet
   tags = {}
 }
 
-module "alb" {
-  source  = "terraform-aws-modules/alb/aws"
-  version = "~> 6.0"
-
-  name = "${local.name}"
-
-  vpc_id          = module.vpc.vpc_id
-  subnets         = module.vpc.public_subnets
-  security_groups = [module.alb_http_sg.security_group_id]
-
-  http_tcp_listeners = [
-    {
-      port               = 80
-      protocol           = "HTTP"
-      target_group_index = 0
-    }
-  ]
-
-  target_groups = [
-    {
-      name             = local.name
-      backend_protocol = "HTTP"
-      backend_port     = 80
-      target_type      = "instance"
-    },
-  ]
-
-  tags = {}
-}
 
 resource "aws_security_group" "asg_sg" {
   name        = "allow_all"
@@ -126,11 +138,11 @@ resource "aws_security_group" "asg_sg" {
   vpc_id      = module.vpc.vpc_id
 
   ingress {
-    description      = "TLS from VPC"
-    from_port        = 80
-    to_port          = 443
-    protocol         = "tcp"
-    cidr_blocks      = ["0.0.0.0/0"]
+    description = "TLS from VPC"
+    from_port   = 80
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
   egress {
@@ -141,5 +153,5 @@ resource "aws_security_group" "asg_sg" {
     ipv6_cidr_blocks = ["::/0"]
   }
 
-  tags = {  }
+  tags = {}
 }
