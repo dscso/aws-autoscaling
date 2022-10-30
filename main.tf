@@ -28,8 +28,14 @@ module "vpc" {
 
   enable_nat_gateway = false # no internet 😢
   enable_vpn_gateway = false
+}
 
-  tags = {}
+# SSH keypair
+module "key_pair_developer" {
+  source = "terraform-aws-modules/key-pair/aws"
+
+  key_name   = "developer"
+  public_key = var.ssh-key-developer
 }
 
 # need to use some preinstalled nginx because there is no internet in the ec2 instances due to missing nat gateway
@@ -62,11 +68,10 @@ module "asg" {
   create_launch_template = true
   image_id               = data.aws_ami.nginx_serverimage.id
   instance_type          = "t2.micro"
+  key_name               = module.key_pair_developer.key_pair_name
 
   security_groups = [aws_security_group.asg_sg.id]
   load_balancers  = [module.elb_http.this_elb_name]
-
-  tags = {}
 }
 
 module "elb_http" {
@@ -85,13 +90,7 @@ module "elb_http" {
       instance_protocol = "HTTP"
       lb_port           = 80
       lb_protocol       = "HTTP"
-    },
-    {
-      instance_port     = 80
-      instance_protocol = "http"
-      lb_port           = 80
-      lb_protocol       = "http"
-    },
+    }
   ]
 
   health_check = {
@@ -105,10 +104,9 @@ module "elb_http" {
   access_logs = {
     bucket = var.elb_logging_bucket_name
   }
-
-  tags = {}
 }
-# logging
+
+# logging just for fun
 module "elb_logging_bucket" {
   source = "terraform-aws-modules/s3-bucket/aws"
 
@@ -127,8 +125,6 @@ module "elb_http_sg" {
   description = "Security group for ${local.name}"
 
   ingress_cidr_blocks = ["0.0.0.0/0"]
-
-  tags = {}
 }
 
 
@@ -140,9 +136,10 @@ resource "aws_security_group" "asg_sg" {
   ingress {
     description = "TLS from VPC"
     from_port   = 80
-    to_port     = 443
+    to_port     = 80
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
   }
 
   egress {
@@ -152,6 +149,4 @@ resource "aws_security_group" "asg_sg" {
     cidr_blocks      = ["0.0.0.0/0"]
     ipv6_cidr_blocks = ["::/0"]
   }
-
-  tags = {}
 }
