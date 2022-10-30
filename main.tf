@@ -1,6 +1,10 @@
 locals {
   # defining name of load balancer
   name = "external"
+  private_ip_range = "10.0.0.0/16"
+  everywhere_cdir_ipv4 = ["0.0.0.0/0"]
+  everywhere_cdir_ipv6 = ["::/0"]
+
 }
 # create 10 buckets with incrementing name
 module "ten-buckets" {
@@ -20,7 +24,7 @@ module "vpc" {
   version = "~> 3.18.0"
 
   name = "my-vpc"
-  cidr = "10.0.0.0/16"
+  cidr = local.private_ip_range
 
   azs            = [data.aws_availability_zones.available.names[0], data.aws_availability_zones.available.names[1]]
   intra_subnets  = ["10.0.1.0/24", "10.0.2.0/24"]     # private subnets for ec2 instances
@@ -70,7 +74,7 @@ module "asg" {
   instance_type          = "t2.micro"
   key_name               = module.key_pair_developer.key_pair_name
 
-  security_groups = [aws_security_group.asg_sg.id]
+  security_groups = [aws_security_group.asg_allow_http.id]
   load_balancers  = [module.elb_http.this_elb_name]
 }
 
@@ -81,7 +85,7 @@ module "elb_http" {
   name = "${local.name}-elb"
 
   subnets         = module.vpc.public_subnets
-  security_groups = [module.elb_http_sg.security_group_id]
+  security_groups = [aws_security_group.elb_allow_http.id]
   internal        = false
 
   listener = [
@@ -115,38 +119,49 @@ module "elb_logging_bucket" {
   attach_elb_log_delivery_policy = true
 }
 
-# make load balancer accessible from the internet
-module "elb_http_sg" {
-  source  = "terraform-aws-modules/security-group/aws//modules/http-80"
-  version = "~> 4.0"
 
-  name        = "${local.name}-alb-http"
-  vpc_id      = module.vpc.vpc_id
-  description = "Security group for ${local.name}"
-
-  ingress_cidr_blocks = ["0.0.0.0/0"]
-}
-
-
-resource "aws_security_group" "asg_sg" {
-  name        = "allow_all"
+resource "aws_security_group" "elb_allow_http" {
+  name        = "elb_http"
   description = "Allow inbound traffic"
   vpc_id      = module.vpc.vpc_id
 
   ingress {
-    description = "TLS from VPC"
+    description = "HTTP from internet"
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-    ipv6_cidr_blocks = ["::/0"]
+    cidr_blocks      = local.everywhere_cdir_ipv4
+    ipv6_cidr_blocks = local.everywhere_cdir_ipv6
   }
 
   egress {
     from_port        = 0
     to_port          = 0
     protocol         = "-1"
-    cidr_blocks      = ["0.0.0.0/0"]
-    ipv6_cidr_blocks = ["::/0"]
+    cidr_blocks      = local.everywhere_cdir_ipv4
+    ipv6_cidr_blocks = local.everywhere_cdir_ipv6
+  }
+}
+
+resource "aws_security_group" "asg_allow_http" {
+  name        = "asg_http"
+  description = "Allow inbound traffic"
+  vpc_id      = module.vpc.vpc_id
+
+  ingress {
+    description = "HTTP from VPC"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = module.vpc.public_subnets_cidr_blocks
+    ipv6_cidr_blocks = module.vpc.public_subnets_ipv6_cidr_blocks
+  }
+
+  egress {
+    from_port        = 0
+    to_port          = 0
+    protocol         = "-1"
+    cidr_blocks      = local.everywhere_cdir_ipv4
+    ipv6_cidr_blocks = local.everywhere_cdir_ipv6
   }
 }
