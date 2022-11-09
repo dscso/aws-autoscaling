@@ -1,7 +1,7 @@
 locals {
   # defining name of load balancer
-  name = "external"
-  private_ip_range = "10.0.0.0/16"
+  name                 = "external"
+  private_ip_range     = "10.0.0.0/16"
   everywhere_cdir_ipv4 = ["0.0.0.0/0"]
   everywhere_cdir_ipv6 = ["::/0"]
 
@@ -10,6 +10,7 @@ locals {
 module "ten-buckets" {
   count  = 10
   source = "terraform-aws-modules/s3-bucket/aws"
+  version = "~> 3.5.0"
 
   bucket = "${var.ten_buckets}-${count.index}"
   acl    = "private"
@@ -37,6 +38,7 @@ module "vpc" {
 # SSH keypair
 module "key_pair_developer" {
   source = "terraform-aws-modules/key-pair/aws"
+  version = "~> 2.0.0"
 
   key_name   = "developer"
   public_key = var.ssh-key-developer
@@ -64,14 +66,14 @@ module "asg" {
   name = local.name
 
   vpc_zone_identifier = module.vpc.intra_subnets
-  min_size            = 2
-  max_size            = 2
-  desired_capacity    = 2
+  min_size            = var.asg-min-capacity
+  max_size            = var.asg-max-capacity
+  desired_capacity    = var.asg-desired-capacity
 
   # Launch template
   create_launch_template = true
   image_id               = data.aws_ami.nginx_serverimage.id
-  instance_type          = "t2.micro"
+  instance_type          = var.asg-instance-type
   key_name               = module.key_pair_developer.key_pair_name
 
   security_groups = [aws_security_group.asg_allow_http.id]
@@ -113,6 +115,7 @@ module "elb_http" {
 # logging just for fun
 module "elb_logging_bucket" {
   source = "terraform-aws-modules/s3-bucket/aws"
+  version = "~> 3.5.0"
 
   bucket                         = var.elb_logging_bucket_name
   acl                            = "log-delivery-write"
@@ -126,10 +129,10 @@ resource "aws_security_group" "elb_allow_http" {
   vpc_id      = module.vpc.vpc_id
 
   ingress {
-    description = "HTTP from internet"
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
+    description      = "HTTP from internet"
+    from_port        = 80
+    to_port          = 80
+    protocol         = "tcp"
     cidr_blocks      = local.everywhere_cdir_ipv4
     ipv6_cidr_blocks = local.everywhere_cdir_ipv6
   }
@@ -149,11 +152,11 @@ resource "aws_security_group" "asg_allow_http" {
   vpc_id      = module.vpc.vpc_id
 
   ingress {
-    description = "HTTP from VPC"
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = module.vpc.public_subnets_cidr_blocks
+    description      = "HTTP from VPC"
+    from_port        = 80
+    to_port          = 80
+    protocol         = "tcp"
+    cidr_blocks      = module.vpc.public_subnets_cidr_blocks
     ipv6_cidr_blocks = module.vpc.public_subnets_ipv6_cidr_blocks
   }
 
